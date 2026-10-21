@@ -42,13 +42,13 @@ A changeset triggers a real release: version bump, changelog, tag and GitHub rel
 
   ```markdown
   ---
-  "readthrough": minor
+  "@zenius-one/telemetry-readthrough-go": minor
   ---
 
   Add `Cache.Warm` so callers can pre-populate a class at a bounded rate.
   ```
 
-  The name is the shim's `package.json` `name` (`readthrough`, `readthrough-prom`).
+  The name is the shim's `package.json` `name` (`@zenius-one/telemetry-readthrough-go`, `@zenius-one/telemetry-readthrough-prom-go`).
 - **Bump type:** `patch` for fixes and internal changes with no new surface; `minor` for
   backward-compatible additions; `major` for anything that breaks an existing caller (changed
   semantics, removed or renamed API). While a module is `0.x`, breaking changes are `minor`, and
@@ -64,5 +64,5 @@ A changeset triggers a real release: version bump, changelog, tag and GitHub rel
 Release core first, then, as a follow-up change, pin the new core version in
 `packages/readthrough/prom` with
 `GOWORK=off go get github.com/zenius-one/telemetry/packages/readthrough@vX.Y.Z` and add a
-changeset for `readthrough-prom` if its behaviour or requirement changed. Never pin a version
+changeset for `@zenius-one/telemetry-readthrough-prom-go` if its behaviour or requirement changed. Never pin a version
 that has not been tagged.

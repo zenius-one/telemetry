@@ -7,7 +7,7 @@ alwaysApply: false
 ---
 
 - A change to a module needs a changeset: `.changeset/<kebab-slug>.md` with the shim's
-  `package.json` name (`readthrough`, `readthrough-prom`) and `patch` / `minor` / `major`.
+  `package.json` name (`@zenius-one/telemetry-readthrough-go`, `@zenius-one/telemetry-readthrough-prom-go`) and `patch` / `minor` / `major`.
   While a module is 0.x a breaking change is `minor`, and the text must say so. A README-only
   change needs none.
 - After writing a changeset by hand run `node .github/scripts/sync-changeset-ignore.mjs --write`.
