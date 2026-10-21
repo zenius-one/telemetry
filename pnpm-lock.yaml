@@ -20,6 +20,8 @@ importers:
 
   packages/readthrough: {}
 
+  packages/readthrough/prom: {}
+
 packages:
 
   '@changesets/apply-release-plan@8.1.1':
