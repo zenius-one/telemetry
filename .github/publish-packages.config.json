@@ -1,0 +1,6 @@
+{
+  "$schema": "./publish-packages.config.schema.json",
+  "registry": "https://npm.pkg.github.com",
+  "include": [],
+  "exclude": []
+}

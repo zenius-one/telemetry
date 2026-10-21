@@ -1,0 +1,456 @@
+name: Publish Packages
+
+# Single-stage, Changesets-driven release for both npm packages and Go
+# modules (via version-tracking shims — see .github/README.md). Replaces
+# the old separate svu/GoReleaser Go pipeline and manual-version-bump npm
+# pipeline with one mechanism:
+#
+#   1. `changeset version` consumes every pending .changeset/*.md file,
+#      bumping each targeted package's package.json version and writing
+#      its CHANGELOG.md. This is the only source of "what changed and by
+#      how much" — there's no separate git-diff-based change detection
+#      anymore, unlike the old workflows.
+#   2. The version-bump is committed and pushed directly to main (no
+#      intermediate "Version Packages" PR — this repo chose the
+#      single-stage flow deliberately; see .github/README.md for the
+#      trade-off).
+#   3. Whatever actually got bumped is published: npm packages via
+#      `pnpm publish` to GitHub Packages, Go modules via a git tag
+#      (packages/<dir>/vX.Y.Z) + GoReleaser release, using the version
+#      Changesets just computed.
+#
+# Requires a repo setting this file can't apply itself: main's branch
+# protection (if any) must allow github-actions[bot] to push directly, or
+# step 2 above will fail. See .github/README.md.
+#
+# Recovering a missed publish: because steps 2 and 3 above are separate
+# jobs, a downstream publish failure (bad build, transient auth, ...) can
+# leave a package "released" in git (version bumped, changelog written,
+# changeset consumed) without ever reaching the registry/tag. Since nothing
+# changed under .changeset/** for that state, a normal push won't retrigger
+# this workflow. Run it manually via workflow_dispatch with mode: reconcile
+# to recover — it skips changeset consumption entirely and instead diffs
+# each managed package's already-committed version (npm package.json / Go
+# module shim — both append-only ledgers, see .github/README.md) against
+# what's actually published, republishing only what's missing. Because it
+# only ever looks at the current committed version, not history, it
+# naturally targets just the latest of any stacked-up misses.
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".changeset/**"
+      - ".github/publish-packages.config.json"
+      - ".github/publish-go-packages.config.json"
+      - ".github/workflows/publish-packages.yml"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "auto: normal changeset-driven release. reconcile: republish whatever's already committed but missing from the registry/tags (recovers a partially-failed run)."
+        type: choice
+        options:
+          - auto
+          - reconcile
+        default: auto
+
+concurrency:
+  # Serialize releases per branch; never cancel one mid-publish.
+  group: publish-packages-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write # push the version-bump commit + Go tags
+  packages: write # publish npm packages to GitHub Packages
+  pull-requests: write # to create and update release pull requests
+  # id-token: write # required for OIDC trusted publishing (not GitHub Packages)
+
+jobs:
+  release:
+    name: Version
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.outputs.outputs.sha }}
+      npm-matrix: ${{ steps.outputs.outputs.npm-matrix }}
+      go-matrix: ${{ steps.outputs.outputs.go-matrix }}
+      has-npm-targets: ${{ steps.outputs.outputs.has-npm-targets }}
+      has-go-targets: ${{ steps.outputs.outputs.has-go-targets }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/setup@v2
+        with:
+          # No `version:` here — package.json's "packageManager": "pnpm@11.5.0"
+          # already pins it. Specifying both trips pnpm's own guard:
+          # ERR_PNPM_BAD_PM_VERSION ("Multiple versions of pnpm specified").
+          runtime: node@24
+          cache: true
+          install: false # keep the explicit --frozen-lockfile install below
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check for pending changesets
+        id: pending
+        if: github.event.inputs.mode != 'reconcile'
+        run: |
+          count=$(ls .changeset/*.md 2>/dev/null | grep -v '/README\.md$' | wc -l | tr -d ' ')
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          echo "Found $count pending changeset(s)."
+
+      - name: Snapshot managed package versions
+        if: github.event.inputs.mode != 'reconcile' && steps.pending.outputs.count != '0'
+        run: node .github/scripts/resolve-changeset-release.mjs snapshot /tmp/before.json
+
+      - name: Version
+        if: github.event.inputs.mode != 'reconcile' && steps.pending.outputs.count != '0'
+        run: pnpm exec changeset version
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # changelog-github needs this to link PRs/commits
+
+      - name: Diff bumped packages
+        id: diff
+        if: github.event.inputs.mode != 'reconcile' && steps.pending.outputs.count != '0'
+        run: node .github/scripts/resolve-changeset-release.mjs diff /tmp/before.json
+
+      - name: Commit and push version bump
+        id: push
+        # Not gated on the npm/Go publish targets: the changesets have to be consumed
+        # (committed) even when a release reports no publishable target.
+        if: github.event.inputs.mode != 'reconcile' && steps.pending.outputs.count != '0'
+        run: |
+          set -euo pipefail
+          if [ -z "$(git status --porcelain packages .changeset)" ]; then
+            echo "changeset version changed nothing, skipping commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add packages .changeset
+          git commit -m "chore: version packages [skip ci]"
+          git push origin HEAD:${{ github.ref_name }}
+
+      # Recovery path — see the "Recovering a missed publish" comment at the top of this file. No
+      # changeset consumption here: the versions compared are whatever is already committed.
+      - name: Configure npm registry for reconcile lookups
+        if: github.event.inputs.mode == 'reconcile'
+        run: |
+          cat <<'EOF' >> .npmrc
+          //npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}
+          EOF
+
+      - name: Reconcile missed publishes
+        id: reconcile
+        if: github.event.inputs.mode == 'reconcile'
+        run: node .github/scripts/resolve-changeset-release.mjs reconcile
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PNPM_CONFIG_NPMRC_AUTH_FILE: ${{ github.workspace }}/.npmrc
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve job outputs
+        id: outputs
+        # The matrix values are JSON (embedded double quotes) — piping them
+        # through ${{ ... }} straight into a double-quoted shell string
+        # (as this step used to) lets GitHub Actions' textual substitution
+        # paste those quotes into the middle of the echo command, breaking
+        # it apart and truncating the value. Routed through `env:` instead:
+        # that substitution happens at the runner level, not through the
+        # shell, so embedded quotes are inert.
+        env:
+          RECONCILE_NPM_MATRIX: ${{ steps.reconcile.outputs.npm-matrix }}
+          RECONCILE_GO_MATRIX: ${{ steps.reconcile.outputs.go-matrix }}
+          RECONCILE_HAS_NPM_TARGETS: ${{ steps.reconcile.outputs.has-npm-targets }}
+          RECONCILE_HAS_GO_TARGETS: ${{ steps.reconcile.outputs.has-go-targets }}
+          DIFF_NPM_MATRIX: ${{ steps.diff.outputs.npm-matrix }}
+          DIFF_GO_MATRIX: ${{ steps.diff.outputs.go-matrix }}
+          DIFF_HAS_NPM_TARGETS: ${{ steps.diff.outputs.has-npm-targets }}
+          DIFF_HAS_GO_TARGETS: ${{ steps.diff.outputs.has-go-targets }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event.inputs.mode }}" == "reconcile" ]; then
+            {
+              echo "npm-matrix=$RECONCILE_NPM_MATRIX"
+              echo "go-matrix=$RECONCILE_GO_MATRIX"
+              echo "has-npm-targets=$RECONCILE_HAS_NPM_TARGETS"
+              echo "has-go-targets=$RECONCILE_HAS_GO_TARGETS"
+            } >> "$GITHUB_OUTPUT"
+          else
+            {
+              echo "npm-matrix=$DIFF_NPM_MATRIX"
+              echo "go-matrix=$DIFF_GO_MATRIX"
+              echo "has-npm-targets=$DIFF_HAS_NPM_TARGETS"
+              echo "has-go-targets=$DIFF_HAS_GO_TARGETS"
+            } >> "$GITHUB_OUTPUT"
+          fi
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+  publish-npm:
+    name: Publish ${{ matrix.target.name }}
+    needs: release
+    if: needs.release.outputs.has-npm-targets == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJson(needs.release.outputs.npm-matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release.outputs.sha }}
+
+      - name: Setup pnpm
+        uses: pnpm/setup@v2
+        with:
+          # No `version:` here — package.json's "packageManager": "pnpm@11.5.0"
+          # already pins it. Specifying both trips pnpm's own guard:
+          # ERR_PNPM_BAD_PM_VERSION ("Multiple versions of pnpm specified").
+          runtime: node@24
+          cache: true
+          install: false # keep the explicit --frozen-lockfile install below
+
+      # pnpm's only supported way to configure a registry auth token is .npmrc (actions/setup-node's
+      # registry-url input is not picked up by `pnpm publish`). Written here, never committed: this
+      # is an ephemeral checkout of this repo's own main branch. ${NODE_AUTH_TOKEN} stays literal
+      # for pnpm to expand at read time (PNPM_CONFIG_NPMRC_AUTH_FILE below).
+      - name: Configure npm registry auth
+        run: |
+          cat <<'EOF' >> .npmrc
+          //npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}
+          EOF
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build ${{ matrix.target.name }}
+        run: pnpm turbo run build --filter="${{ matrix.target.name }}..."
+
+      # Guards reruns (a manual retry, or workflow_dispatch mode: reconcile
+      # after a downstream step failed) — `pnpm publish` hard-fails if this
+      # exact version is already on the registry, so check first instead of
+      # letting that failure block an otherwise-fine rerun.
+      - name: Check whether this version is already published
+        id: npm-check
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PNPM_CONFIG_NPMRC_AUTH_FILE: ${{ github.workspace }}/.npmrc
+        run: |
+          if npm view "${{ matrix.target.name }}@${{ matrix.target.version }}" version --registry=https://npm.pkg.github.com >/dev/null 2>&1; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish ${{ matrix.target.name }}@${{ matrix.target.version }}
+        if: steps.npm-check.outputs.published != 'true'
+        working-directory: ${{ matrix.target.path }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PNPM_CONFIG_NPMRC_AUTH_FILE: ${{ github.workspace }}/.npmrc
+        run: pnpm publish --no-git-checks --access restricted --registry=https://npm.pkg.github.com
+
+      # Equivalent of changesets/action's createGithubReleases (default
+      # true) — that's an input to the official action, not a
+      # .changeset/config.json field, and this repo doesn't run that
+      # action (custom two-job flow instead, see .github/README.md).
+      # publish-go already does this for Go modules via GoReleaser;
+      # npm packages had no equivalent. Same "one changelog source of
+      # truth" approach as that job: point at the CHANGELOG.md section
+      # Changesets already wrote, rather than generating notes from git
+      # log.
+      - name: Extract release notes
+        run: |
+          awk '/^## /{c++} c==1' "${{ matrix.target.path }}/CHANGELOG.md" > /tmp/release-notes.md
+          cat /tmp/release-notes.md
+
+      - name: Check whether the GitHub Release already exists
+        id: release-check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "${{ matrix.target.name }}@${{ matrix.target.version }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create GitHub Release for ${{ matrix.target.name }}@${{ matrix.target.version }}
+        # Guards a rerun where the registry publish above already succeeded
+        # (or was already there from a prior attempt) but this step didn't.
+        if: steps.release-check.outputs.exists != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ matrix.target.name }}@${{ matrix.target.version }}" \
+            --target "${{ needs.release.outputs.sha }}" \
+            --title "${{ matrix.target.name }}@${{ matrix.target.version }}" \
+            --notes-file /tmp/release-notes.md
+
+  publish-go:
+    name: Publish ${{ matrix.target.dir }}
+    needs: release
+    if: needs.release.outputs.has-go-targets == 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target: ${{ fromJson(needs.release.outputs.go-matrix) }}
+    env:
+      # A published module must build on its own go.mod/go.sum, as a consumer sees it, not through
+      # the repository's go.work. A nested module (packages/readthrough/prom) can therefore only
+      # be published once the core tag it requires exists; if both are released in one run and the
+      # nested job loses the race, re-run with mode: reconcile.
+      GOWORK: "off"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release.outputs.sha }}
+          fetch-depth: 0 # need full history to push a tag cleanly
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: ${{ matrix.target.dir }}/go.mod
+          cache-dependency-path: ${{ matrix.target.dir }}/go.sum
+
+      - name: Build, vet and test ${{ matrix.target.module }}
+        working-directory: ${{ matrix.target.dir }}
+        run: |
+          go build ./...
+          go vet ./...
+          go test ./...
+
+      # Idempotent: guards a rerun where a prior attempt tagged and pushed
+      # successfully but a later step (GoReleaser) then failed — retagging
+      # would otherwise hard-fail with "tag already exists".
+      - name: Tag ${{ matrix.target.tag }}
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --tags origin "refs/tags/${{ matrix.target.tag }}" >/dev/null 2>&1; then
+            echo "${{ matrix.target.tag }} already exists on origin, skipping."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ matrix.target.tag }}" \
+            -m "Publish ${{ matrix.target.module }}@${{ matrix.target.version }}"
+          git push origin "${{ matrix.target.tag }}"
+
+      - name: Extract release notes
+        # Changesets already wrote this module's changelog; GoReleaser
+        # gets pointed at the newest section instead of generating its
+        # own from git log, so there's one changelog source of truth.
+        run: |
+          awk '/^## /{c++} c==1' "${{ matrix.target.dir }}/CHANGELOG.md" > /tmp/release-notes.md
+          cat /tmp/release-notes.md
+
+      - name: Check whether the GitHub Release already exists
+        id: release-check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "${{ matrix.target.tag }}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Generate GoReleaser config
+        # No `builds:` output: these are libraries with no main package.
+        # `skip: true` on the (sole) build entry disables compilation
+        # while still letting GoReleaser produce the GitHub Release.
+        #
+        # `monorepo:` is a GoReleaser Pro-only field (OSS's config.Project
+        # has no such field, so `goreleaser check` fails against it). We
+        # don't need it anyway: the tag step below already pushes the
+        # prefixed tag, and GORELEASER_CURRENT_TAG (set on the `release`
+        # step below) tells the OSS binary exactly which tag to build from
+        # instead of relying on `monorepo:`/`git describe` to pick it out
+        # of the repo's other module tags.
+        run: |
+          cat > "${{ matrix.target.dir }}/.goreleaser.yaml" <<EOF
+          version: 2
+          builds:
+            - skip: true
+          changelog:
+            disable: true
+          EOF
+
+      - name: Validate GoReleaser config
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: latest
+          args: check -f ${{ matrix.target.dir }}/.goreleaser.yaml
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Release ${{ matrix.target.module }}@${{ matrix.target.version }}
+        # Guards a rerun where the tag above already existed from a prior
+        # attempt but the release itself was never created.
+        if: steps.release-check.outputs.exists != 'true'
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          distribution: goreleaser
+          version: latest
+          # --skip=validate: GoReleaser OSS's validate pipe (a) requires the
+          # current tag to parse as bare semver - our tag is prefixed
+          # (dir/vX.Y.Z, see GORELEASER_CURRENT_TAG below) so it fails with
+          # "invalid semantic version" - and (b) fails on any dirty/untracked
+          # file, which this generated .goreleaser.yaml always is. Skipping
+          # it is safe: we already do our own tag-exists/release-exists
+          # checks above, and this step has no build/changelog output that
+          # depends on a parsed semver version.
+          args: release --clean --skip=validate --release-notes /tmp/release-notes.md -f ${{ matrix.target.dir }}/.goreleaser.yaml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # GoReleaser OSS has no `--current-tag` flag - the way to pin the
+          # tag it builds from (and, critically, the tag the created GitHub
+          # Release is attached to) is this env var. Without it, GoReleaser
+          # falls back to `git describe`, which is ambiguous here since
+          # every package's tag lives on the same commit. This must be the
+          # real prefixed tag pushed above, not a bare version - GoReleaser
+          # creates the GitHub Release under whatever this value is, and
+          # the idempotency check above looks up the release by this same
+          # prefixed tag.
+          GORELEASER_CURRENT_TAG: ${{ matrix.target.tag }}
+
+      # The Go module proxy and pkg.go.dev fetch a version lazily, on its first request, so a
+      # consumer's first `go get` of a fresh tag can race the proxy or hit a cached "not found".
+      # Asking for it right after the tag is pushed makes the proxy fetch and cache it now. This is
+      # the documented way: run `go list -m <module>@<version>` against proxy.golang.org (the go
+      # command does the path escaping, retries and checksum-database lookup itself).
+      #
+      # GoReleaser does not do this for us: its proxy pipe only exists behind `gomod.proxy: true`,
+      # needs the config's cwd to be the module and a bare-semver tag, and neither holds here
+      # (prefixed tag, run from the repository root: the release log says "not a go module").
+      #
+      # Best effort: a failure never fails the release (the tag and GitHub release already exist),
+      # it only means indexing happens on first use instead. Also runs on a reconcile rerun.
+      - name: Request Go module proxy indexing
+        continue-on-error: true
+        working-directory: ${{ runner.temp }}
+        env:
+          MODULE: ${{ matrix.target.module }}
+          VERSION: v${{ matrix.target.version }}
+          GOWORK: "off"
+          GOFLAGS: "-mod=mod"
+          GOPROXY: https://proxy.golang.org
+        run: |
+          set -uo pipefail
+          for attempt in 1 2 3 4 5; do
+            if go list -m "${MODULE}@${VERSION}"; then
+              break
+            fi
+            echo "attempt $attempt: not available on the proxy yet"
+            sleep $((attempt * 10))
+          done
+          # pkg.go.dev's documented on-demand fetch (documentation indexing); any status is fine.
+          curl -s -o /dev/null -w "pkg.go.dev fetch: HTTP %{http_code}\n" -X POST \
+            "https://pkg.go.dev/fetch/${MODULE}@${VERSION}" || true

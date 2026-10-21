@@ -1,0 +1,37 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "publish-packages config",
+  "description": "Controls which pnpm workspace packages the publish-packages workflow is allowed to build and publish to GitHub Packages.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "registry",
+    "include"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Pointer back to this schema file, for editor validation/autocomplete. Not read by any workflow."
+    },
+    "registry": {
+      "type": "string",
+      "description": "GitHub Packages npm registry URL.",
+      "default": "https://npm.pkg.github.com"
+    },
+    "include": {
+      "type": "array",
+      "description": "Glob patterns (matched against the workspace-relative package directory, e.g. \"packages/example-sdk\") whose matching packages are eligible for publish. Supports '*' and '?' wildcards.",
+      "items": {
+        "type": "string"
+      }
+    },
+    "exclude": {
+      "type": "array",
+      "description": "Glob patterns that override 'include'. Use for packages that are still in development and must never be published automatically, even if a path matches 'include'.",
+      "items": {
+        "type": "string"
+      },
+      "default": []
+    }
+  }
+}

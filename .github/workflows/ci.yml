@@ -1,0 +1,32 @@
+name: CI
+
+# The pre-merge gate: builds, vets and tests every package (Turborepo caches what did not change).
+# Pull requests only. A push to main is not re-run here: the change was gated on its PR, the
+# version-bump commit is [skip ci], and publish-packages.yml builds, vets and tests each module
+# again right before tagging it. Markdown-only changes start nothing.
+on:
+  pull_request:
+    paths-ignore:
+      - "**/*.md"
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - uses: pnpm/setup@v2
+        with:
+          runtime: node@24
+          cache: true
+          install: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: packages/readthrough/go.mod
+          cache-dependency-path: packages/readthrough/go.sum
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm turbo run lint check-types test build

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://turborepo.dev/schema.json",
+  "tasks": {
+    // Go modules carry a package.json whose scripts call the Go toolchain (see
+    // packages/readthrough/package.json), so Turborepo caches and orders them like any other
+    // package. A future TypeScript package defines the same script names.
+    "build": {
+      "dependsOn": ["^build"],
+      // Go builds produce nothing worth caching; a future TypeScript package adds its own
+      // `outputs` (e.g. "dist/**") with a package-level turbo.json.
+      "outputs": []
+    },
+    "lint": {},
+    "check-types": {
+      "dependsOn": ["^check-types"]
+    },
+    "test": {
+      "dependsOn": ["^build"]
+    }
+  }
+}

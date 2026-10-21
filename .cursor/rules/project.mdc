@@ -1,0 +1,24 @@
+---
+description: Project overview and always-on rules for the telemetry monorepo
+alwaysApply: true
+---
+
+# telemetry
+
+A pnpm + Turborepo + Changesets monorepo of generic, reusable telemetry packages for services.
+
+- `packages/readthrough`: Go core, read-through cache protection over `cachestore.CacheStore`.
+- `packages/readthrough/prom`: separate Go module, Prometheus `Observer`.
+- Each Go module has a `package.json` shim for Changesets and Turborepo scripts; never published.
+
+Process is defined in `.ai/`; read it rather than guessing:
+
+- Committing and changesets: `.ai/skills/commit-strategy/SKILL.md`
+- Issues, branches and PRs: `.ai/skills/pr-strategy/SKILL.md`
+- What depends on what: `.ai/references/dependency-graph/README.md`
+
+Always: keep packages free of product concepts; keep observability backends out of core modules;
+treat cache errors as misses; jitter every TTL inside the package; hash secrets/PII before using
+them in keys; run `pnpm turbo run build lint check-types test`; one issue per PR with one
+`Closes #n`.
+Never: hand-edit `.changeset/config.json`'s `ignore` list, or push to `main`.

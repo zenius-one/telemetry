@@ -1,0 +1,5 @@
+{
+  "$schema": "./publish-go-packages.config.schema.json",
+  "include": [],
+  "exclude": []
+}

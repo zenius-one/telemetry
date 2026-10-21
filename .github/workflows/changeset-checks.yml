@@ -1,0 +1,66 @@
+name: Changeset Checks
+
+# Pre-merge gates for anything workflows/publish-packages.yml manages
+# (npm packages and Go module version-tracking shims alike — see
+# .github/README.md):
+#
+#   1. A PR touching a managed package must include a changeset
+#      (`pnpm changeset status --since`) — otherwise it merges with no
+#      recorded version bump and publish-packages.yml has nothing to do.
+#   2. .changeset/config.json's "ignore" list must match what
+#      publish-packages.config.json / publish-go-packages.config.json
+#      currently say is eligible — catches an include/exclude edit that
+#      forgot to also run `pnpm changeset` (which re-syncs it locally).
+#   3. No Go module's version-tracking shim may be deleted or have its
+#      version regress relative to the base branch — publish-packages.yml's
+#      reconcile mode (see .github/README.md) trusts the shim's committed
+#      version as the source of truth for "what should be published", so it
+#      has to be an append-only ledger.
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+    paths:
+      - "packages/**"
+      - ".changeset/**"
+      - ".github/publish-packages.config.json"
+      - ".github/publish-go-packages.config.json"
+      # A README never needs a version bump. Negations must come after the patterns they carve out
+      # of, and a PR whose only matching files are READMEs then starts no run at all.
+      - "!**/README.md"
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Setup pnpm
+        uses: pnpm/setup@v2
+        with:
+          # No `version:` here: package.json's "packageManager" already pins it, and
+          # specifying both trips ERR_PNPM_BAD_PM_VERSION.
+          runtime: node@24
+          cache: true
+          install: false # keep the explicit --frozen-lockfile install below
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Fetch base branch
+        run: git fetch origin ${{ github.event.pull_request.base.ref }} --depth=1
+
+      - name: Require a changeset for touched packages
+        run: pnpm exec changeset status --since=origin/${{ github.event.pull_request.base.ref }}
+
+      - name: Check .changeset/config.json ignore list is in sync
+        run: node .github/scripts/sync-changeset-ignore.mjs
+
+      - name: Check Go module shims weren't deleted or regressed
+        run: node .github/scripts/check-go-shim-integrity.mjs origin/${{ github.event.pull_request.base.ref }}

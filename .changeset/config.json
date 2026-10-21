@@ -1,0 +1,25 @@
+{
+  "$schema": "https://unpkg.com/@changesets/config@4.0.0/schema.json",
+  "baseBranch": "main",
+  "access": "restricted",
+  "format": "auto",
+  "changelog": [
+    "@changesets/changelog-github",
+    {
+      "repo": "zenius-one/telemetry"
+    }
+  ],
+  "commit": false,
+  "ignore": [
+    "@zenius-one/readthrough",
+    "@zenius-one/readthrough-prom",
+    "telemetry"
+  ],
+  "fixed": [],
+  "linked": [],
+  "updateInternalDependencies": "patch",
+  "privatePackages": {
+    "version": true,
+    "tag": false
+  }
+}

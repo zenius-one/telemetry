@@ -1,0 +1,23 @@
+{
+  "name": "telemetry",
+  "version": "0.0.0",
+  "description": "Telemetry building blocks for services: generic, reusable packages (read-through cache protection, ...), each its own module.",
+  "private": true,
+  "scripts": {
+    "build": "turbo run build",
+    "lint": "turbo run lint",
+    "check-types": "turbo run check-types",
+    "test": "turbo run test",
+    "changeset": "node .github/scripts/sync-changeset-ignore.mjs --write && changeset"
+  },
+  "license": "MIT",
+  "packageManager": "pnpm@11.5.0",
+  "engines": {
+    "node": ">=24"
+  },
+  "devDependencies": {
+    "@changesets/changelog-github": "^1.0.0",
+    "@changesets/cli": "^3.0.0",
+    "turbo": "^2.10.10"
+  }
+}
