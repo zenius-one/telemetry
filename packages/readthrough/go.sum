@@ -1,0 +1,4 @@
+github.com/zenius-one/cachestore/packages/cachestore-go v0.1.0 h1:DjK9xj3kw5UuNjvUi13ZGQqKxEMrv3aI5jw0hvHdSAc=
+github.com/zenius-one/cachestore/packages/cachestore-go v0.1.0/go.mod h1:NBKb+xML5Iauzie6WJTxrMnqWk0iPBcn1Vbijfnb+6E=
+golang.org/x/sync v0.23.0 h1:KameEIfc1IkluZyXWLn39Wd4tURc6GbCiISGiZm2bQk=
+golang.org/x/sync v0.23.0/go.mod h1:sUUOizhqBxiL6pEWpqNLUiaJn1ShEbZ6BBqskPbjZm0=
