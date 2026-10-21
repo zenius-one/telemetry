@@ -33,10 +33,6 @@ repository's non-test code.
   get github.com/zenius-one/telemetry/packages/readthrough@vX.Y.Z`) after core releases a change
   prom needs; Go will not resolve a required version that has no tag, even in a workspace.
 
-- **Bootstrap exception.** Until core has its first tag, `readthrough/prom/go.mod` carries
-  `replace .../readthrough => ../`. The first follow-up after core is released deletes the
-  `replace` and pins the tag; do not leave it in place afterwards (consumers ignore it).
-
 ## Release graph
 
 Each Go module has a `package.json` next to its `go.mod`. It is a **version-tracking shim** (never
