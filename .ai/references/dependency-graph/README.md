@@ -44,8 +44,8 @@ published to npm) so Changesets can bump it and Turborepo can run its scripts.
 
 | Shim name | Module | Released when |
 | --- | --- | --- |
-| `readthrough` | core | listed in `.github/publish-go-packages.config.json` and bumped by a changeset |
-| `readthrough-prom` | prom | listed in `.github/publish-go-packages.config.json` and bumped by a changeset |
+| `@zenius-one/telemetry-readthrough-go` | core | listed in `.github/publish-go-packages.config.json` and bumped by a changeset |
+| `@zenius-one/telemetry-readthrough-prom-go` | prom | listed in `.github/publish-go-packages.config.json` and bumped by a changeset |
 
 Tags are `packages/<dir>/vX.Y.Z` (`packages/readthrough/prom/vX.Y.Z` for the nested module):
 the Go toolchain resolves a module in a subdirectory by its directory-prefixed tag.
