@@ -1,6 +1,6 @@
 {
   "name": "@zenius-one/telemetry-readthrough-go",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "private": true,
   "description": "Version-tracking package.json for the Go module at this path (github.com/zenius-one/telemetry/packages/readthrough). NOT an npm package: never published. It exists so Changesets can bump the version and write CHANGELOG.md, and so Turborepo can run the module's tasks like any other package.",
   "license": "MIT",
