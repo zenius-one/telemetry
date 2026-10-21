@@ -454,3 +454,67 @@ jobs:
           # pkg.go.dev's documented on-demand fetch (documentation indexing); any status is fine.
           curl -s -o /dev/null -w "pkg.go.dev fetch: HTTP %{http_code}\n" -X POST \
             "https://pkg.go.dev/fetch/${MODULE}@${VERSION}" || true
+
+  # Closes the gap described in .github/scripts/bump-go-consumers.mjs: every other go.work module
+  # still pins the OLD version of whatever publish-go just tagged (readthrough/prom requires
+  # readthrough). go.work's `use (...)` hides that in workspace builds, but a consumer or a
+  # GOWORK=off build resolves strictly from the pin.
+  #
+  # Runs after publish-go so the new tag(s) actually resolve; a second, separate push-to-main
+  # commit rather than folding into the version-bump commit, since it cannot happen before the tag
+  # exists. No retrigger loop: it only touches go.mod/go.sum, which is not in this workflow's
+  # trigger paths. Deliberately not `[skip ci]`: it is an ordinary go.mod bump.
+  #
+  # The bumped consumer is not re-released by this commit; its next release carries the new pin.
+  bump-go-consumers:
+    name: Bump internal consumers of bumped Go modules
+    needs: [release, publish-go]
+    if: needs.release.outputs.has-go-targets == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.work
+
+      - name: Bump consumers onto the new tag(s)
+        env:
+          GO_MATRIX: ${{ needs.release.outputs.go-matrix }}
+        run: node .github/scripts/bump-go-consumers.mjs
+
+      - name: Verify consumers still build
+        run: |
+          set -euo pipefail
+          for dir in $(git diff --name-only -- '**/go.mod' | xargs -n1 dirname | sort -u); do
+            echo "== $dir =="
+            (cd "$dir" && GOWORK=off go build ./... && GOWORK=off go vet ./... && GOWORK=off go test ./...)
+          done
+
+      - name: Commit and push
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- '**/go.mod' '**/go.sum'; then
+            echo "No consumer go.mod/go.sum changes — nothing to commit."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -- '**/go.mod' '**/go.sum'
+          git commit -m "chore: bump internal consumers onto newly published Go modules"
+          # Another PR can merge to main while this run is publishing, which makes a plain push a
+          # non-fast-forward. Rebase this commit onto the new tip and retry.
+          for attempt in 1 2 3 4 5; do
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            echo "Push rejected (main moved); rebasing onto the latest tip (attempt $attempt/5)."
+            git pull --rebase origin main
+          done
+          echo "::error::Could not push to main after 5 attempts."
+          exit 1
