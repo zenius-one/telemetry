@@ -7,7 +7,7 @@ Changesets decides what changed, one workflow publishes it.
 | --- | --- | --- |
 | `ci.yml` | PRs only, except markdown-only changes | `turbo run build lint check-types test` |
 | `changeset-checks.yml` | PRs touching `packages/**` or `.changeset/**`, except READMEs | requires a changeset; checks the changeset ignore list and that no Go module shim was deleted or regressed |
-| `publish-packages.yml` | pushes to `main` touching `.changeset/**` or the publish configs; manual | version, then publish npm packages (GitHub Packages) and tag + release Go modules, then ask the Go module proxy and pkg.go.dev to index each new version |
+| `publish-packages.yml` | pushes to `main` touching `.changeset/**` or the publish configs; manual | version, then publish npm packages (GitHub Packages) and tag + release Go modules, then ask the Go module proxy and pkg.go.dev to index each new version, then bump internal consumers (`bump-go-consumers`) |
 
 ## How a Go module is released
 
@@ -19,6 +19,13 @@ Turborepo can run its scripts. `publish-packages.yml`:
 2. For each bumped module listed in `publish-go-packages.config.json`, a matrix job builds and
    vets and tests it with `GOWORK=off` (as a consumer sees it), tags `packages/<dir>/vX.Y.Z` and creates a
    GitHub release from the changelog section with GoReleaser.
+
+3. `bump-go-consumers` (after the Go jobs) runs `.github/scripts/bump-go-consumers.mjs`: every other
+   `go.work` module that requires a just-tagged module (today `readthrough/prom` -> `readthrough`)
+   is moved onto the new tag with `go get` + `go mod tidy`, built, vetted and tested with
+   `GOWORK=off`, and committed to `main` as a separate non-`[skip ci]` commit. That commit touches
+   only `go.mod`/`go.sum`, so it does not retrigger the workflow, and it does not release the
+   consumer: its next release carries the new pin.
 
 The tag is prefixed with the module's directory because that is how the Go toolchain resolves a
 module in a subdirectory.
